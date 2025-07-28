@@ -1,0 +1,31 @@
+[package]
+name = "AutoUpdateMavenSettings"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.27"
+egui = "0.27"
+reqwest = { version = "0.12", features = ["blocking"] }
+chrono = "0.4"
+auto-launch = "0.5"
+image = "0.24.9"
+
+# 可选：如果需要更好的字体渲染
+# egui_extras = { version = "0.27", features = ["all_loaders"] }
+
+[profile.release]
+# 发布版本优化
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+# Windows 特定配置
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winuser", "consoleapi"] }
+
+# macOS 特定配置
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.24"
+objc = "0.2"
