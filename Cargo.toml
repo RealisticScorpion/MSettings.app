@@ -3,6 +3,12 @@ name = "AutoUpdateMavenSettings"
 version = "0.1.0"
 edition = "2021"
 
+[package.metadata.bundle]
+name = "AutoUpdateMavenSettings"
+identifier = "com.example.autoupdatemavensettings"
+icon = ["assets/icon/AppIcon.icns"]
+category = "public.app-category.utilities"
+
 [dependencies]
 eframe = "0.27"
 egui = "0.27"
@@ -20,6 +26,7 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+panic = "abort"
 
 # Windows 特定配置
 [target.'cfg(windows)'.dependencies]

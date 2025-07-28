@@ -4,6 +4,8 @@
 
 ![MSettings](assets/icon/mavi_icon_shadow.ico)
 
+![MSettings](assets/image/screenshot.png)
+
 ## ✨ 新版本特性
 
 ### 🎨 现代化 UI 设计

@@ -1,4 +1,7 @@
 // main.rs
+#[cfg(target_os = "macos")]
+#[link(name = "AppKit", kind = "framework")]
+extern {}
 
 use auto_launch::AutoLaunch;
 use eframe::egui::{self, FontDefinitions, FontFamily, Context, Color32, Stroke, Rounding};
@@ -102,7 +105,7 @@ struct SharedState {
 
 // 颜色常量
 const PRIMARY_COLOR: Color32 = Color32::from_rgb(102, 126, 234);
-const SECONDARY_COLOR: Color32 = Color32::from_rgb(118, 75, 162);
+// const SECONDARY_COLOR: Color32 = Color32::from_rgb(118, 75, 162);
 const SUCCESS_COLOR: Color32 = Color32::from_rgb(76, 175, 80);
 const ERROR_COLOR: Color32 = Color32::from_rgb(244, 67, 54);
 const WARNING_COLOR: Color32 = Color32::from_rgb(255, 152, 0);
@@ -177,7 +180,7 @@ impl AppState {
                         // 标题水平居中并排显示
                         ui.horizontal_centered(|ui| {
                             // 尝试加载 logo - 支持多个路径和工作目录检测
-                            let mut current_dir = std::env::current_dir().unwrap_or_default();
+                            let current_dir = std::env::current_dir().unwrap_or_default();
                             let exe_dir = std::env::current_exe()
                                 .ok()
                                 .and_then(|exe| exe.parent().map(|p| p.to_path_buf()))
