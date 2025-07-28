@@ -12,6 +12,33 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+fn configure_fonts(ctx: &Context) {
+    let mut fonts = FontDefinitions::default();
+
+    // 读取自定义中文字体文件
+    let font_data = fs::read("assets/fonts/SourceHanSerifCN-Regular-1.otf")
+        .expect("❌ 无法读取中文字体文件");
+
+    fonts.font_data.insert(
+        "my_chinese".to_string(),
+        std::borrow::Cow::Owned(font_data),
+    );
+
+    // 将字体应用于默认字体族
+    fonts
+        .families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .insert(0, "my_chinese".to_string());
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .push("my_chinese".to_string());
+
+    ctx.set_fonts(fonts);
+}
+
 fn setup_custom_fonts(ctx: &Context) {
     let mut fonts = FontDefinitions::default();
 
@@ -120,7 +147,7 @@ impl Default for AppState {
         let app_name = "AutoUpdateMavenSettings";
         let exe_path = std::env::current_exe().unwrap();
         let exe_path_str = exe_path.to_str().unwrap();
-        let auto_launch = AutoLaunch::new(app_name, exe_path_str, false, &[] as &[&str]);
+        let auto_launch = AutoLaunch::new(app_name, exe_path_str, &[] as &[&str]);
 
         let auto_launch_enabled = auto_launch.is_enabled().unwrap_or(false);
 

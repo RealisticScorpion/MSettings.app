@@ -28,10 +28,12 @@ codegen-units = 1
 strip = true
 panic = "abort"
 
+[build-dependencies]
+embed-resource = "1.8"
+
 # Windows 特定配置
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "consoleapi"] }
-embed-resource = "2.4"
 
 # macOS 特定配置
 [target.'cfg(target_os = "macos")'.dependencies]
