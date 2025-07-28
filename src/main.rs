@@ -1,7 +1,7 @@
 // main.rs
 #[cfg(target_os = "macos")]
 #[link(name = "AppKit", kind = "framework")]
-extern {}
+extern "C" {}
 
 use auto_launch::AutoLaunch;
 use eframe::egui::{self, FontDefinitions, FontFamily, Context, Color32, Stroke, Rounding};
