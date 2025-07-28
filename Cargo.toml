@@ -31,6 +31,7 @@ panic = "abort"
 # Windows 特定配置
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "consoleapi"] }
+embed-resource = "2.4"
 
 # macOS 特定配置
 [target.'cfg(target_os = "macos")'.dependencies]
