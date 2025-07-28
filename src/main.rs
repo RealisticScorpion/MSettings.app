@@ -4,7 +4,7 @@
 extern "C" {}
 
 use auto_launch::AutoLaunch;
-use eframe::egui::{self, FontDefinitions, FontFamily, Context, Color32, Stroke, Rounding};
+use eframe::egui::{self, FontData, FontDefinitions, FontFamily, Context, Color32, Stroke, Rounding};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -12,62 +12,38 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-fn configure_fonts(ctx: &Context) {
+fn setup_custom_fonts(ctx: &egui::Context) {
+    use eframe::egui::{FontData, FontDefinitions, FontFamily};
+    use std::path::Path;
+
     let mut fonts = FontDefinitions::default();
 
-    // 读取自定义中文字体文件
-    let font_data = fs::read("assets/fonts/SourceHanSerifCN-Regular-1.otf")
-        .expect("❌ 无法读取中文字体文件");
-
-    fonts.font_data.insert(
-        "my_chinese".to_string(),
-        std::borrow::Cow::Owned(font_data),
-    );
-
-    // 将字体应用于默认字体族
-    fonts
-        .families
-        .entry(FontFamily::Proportional)
-        .or_default()
-        .insert(0, "my_chinese".to_string());
-    fonts
-        .families
-        .entry(FontFamily::Monospace)
-        .or_default()
-        .push("my_chinese".to_string());
-
-    ctx.set_fonts(fonts);
-}
-
-fn setup_custom_fonts(ctx: &Context) {
-    let mut fonts = FontDefinitions::default();
-
-    // 尝试多个可能的字体路径
+    // 多平台字体候选路径
     let font_paths = [
         "assets/fonts/SourceHanSerifCN-Regular-1.otf",
         "../Resources/assets/fonts/SourceHanSerifCN-Regular-1.otf",
         "Contents/Resources/assets/fonts/SourceHanSerifCN-Regular-1.otf",
-        // macOS 系统中文字体作为备选
-        "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/PingFang.ttc",                    // macOS PingFang
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",            // macOS Hiragino
     ];
 
     let mut font_loaded = false;
 
     for font_path in &font_paths {
-        if let Ok(font_data) = std::fs::read(font_path) {
-            fonts.font_data.insert(
-                "chinese_font".to_owned(),
-                egui::FontData::from_owned(font_data),
-            );
-            font_loaded = true;
-            println!("成功加载字体: {}", font_path);
-            break;
+        if Path::new(font_path).exists() {
+            if let Ok(font_data) = std::fs::read(font_path) {
+                fonts.font_data.insert(
+                    "chinese_font".to_owned(),
+                    FontData::from_owned(font_data),
+                );
+                font_loaded = true;
+                println!("✅ 成功加载字体: {}", font_path);
+                break;
+            }
         }
     }
 
     if font_loaded {
-        // 将中文字体设置为最高优先级
         fonts
             .families
             .get_mut(&FontFamily::Proportional)
@@ -79,13 +55,27 @@ fn setup_custom_fonts(ctx: &Context) {
             .unwrap()
             .insert(0, "chinese_font".to_owned());
     } else {
-        println!("警告: 无法加载中文字体，可能出现乱码");
-        // 尝试使用系统默认字体
+        println!("⚠️ 无法加载嵌入字体，尝试系统字体");
+
+        #[cfg(target_os = "macos")]
+        let fallback_font = "PingFang SC";
+
+        #[cfg(target_os = "windows")]
+        let fallback_font = "Microsoft YaHei";
+
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let fallback_font = "Noto Sans SC"; // Linux 推荐字体
+
         fonts
             .families
             .get_mut(&FontFamily::Proportional)
             .unwrap()
-            .insert(0, "PingFang SC".to_owned());
+            .insert(0, fallback_font.to_owned());
+        fonts
+            .families
+            .get_mut(&FontFamily::Monospace)
+            .unwrap()
+            .insert(0, fallback_font.to_owned());
     }
 
     ctx.set_fonts(fonts);
@@ -147,7 +137,7 @@ impl Default for AppState {
         let app_name = "AutoUpdateMavenSettings";
         let exe_path = std::env::current_exe().unwrap();
         let exe_path_str = exe_path.to_str().unwrap();
-        let auto_launch = AutoLaunch::new(app_name, exe_path_str, &[] as &[&str]);
+        let auto_launch = AutoLaunch::new(app_name, exe_path_str, false, &[] as &[&str]);
 
         let auto_launch_enabled = auto_launch.is_enabled().unwrap_or(false);
 
