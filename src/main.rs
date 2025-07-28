@@ -12,27 +12,53 @@ use std::time::{Duration, Instant};
 fn setup_custom_fonts(ctx: &Context) {
     let mut fonts = FontDefinitions::default();
 
-    // 加载自定义中文字体
-    if let Ok(font_data) = std::fs::read("assets/fonts/SourceHanSerifCN-Regular-1.otf") {
-        fonts.font_data.insert(
-            "noto_sans_sc".to_owned(),
-            egui::FontData::from_owned(font_data),
-        );
+    // 尝试多个可能的字体路径
+    let font_paths = [
+        "assets/fonts/SourceHanSerifCN-Regular-1.otf",
+        "../Resources/assets/fonts/SourceHanSerifCN-Regular-1.otf",
+        "Contents/Resources/assets/fonts/SourceHanSerifCN-Regular-1.otf",
+        // macOS 系统中文字体作为备选
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    ];
 
-        // 覆盖所有字体族的默认字体
+    let mut font_loaded = false;
+
+    for font_path in &font_paths {
+        if let Ok(font_data) = std::fs::read(font_path) {
+            fonts.font_data.insert(
+                "chinese_font".to_owned(),
+                egui::FontData::from_owned(font_data),
+            );
+            font_loaded = true;
+            println!("成功加载字体: {}", font_path);
+            break;
+        }
+    }
+
+    if font_loaded {
+        // 将中文字体设置为最高优先级
         fonts
             .families
             .get_mut(&FontFamily::Proportional)
             .unwrap()
-            .insert(0, "noto_sans_sc".to_owned());
+            .insert(0, "chinese_font".to_owned());
         fonts
             .families
             .get_mut(&FontFamily::Monospace)
             .unwrap()
-            .insert(0, "noto_sans_sc".to_owned());
-
-        ctx.set_fonts(fonts);
+            .insert(0, "chinese_font".to_owned());
+    } else {
+        println!("警告: 无法加载中文字体，可能出现乱码");
+        // 尝试使用系统默认字体
+        fonts
+            .families
+            .get_mut(&FontFamily::Proportional)
+            .unwrap()
+            .insert(0, "PingFang SC".to_owned());
     }
+
+    ctx.set_fonts(fonts);
 }
 
 #[cfg(target_os = "windows")]
@@ -150,18 +176,62 @@ impl AppState {
                     |ui| {
                         // 标题水平居中并排显示
                         ui.horizontal_centered(|ui| {
-                            // 尝试加载 logo
-                            if let Ok(image_bytes) = std::fs::read("assets/icon/mavi_icon_shadow.png") {
-                                if let Ok(image) = image::load_from_memory(&image_bytes) {
-                                    let rgba_image = image.to_rgba8();
-                                    let size = [rgba_image.width() as usize, rgba_image.height() as usize];
-                                    let pixels = rgba_image.into_raw();
-                                    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
-                                    let texture_handle = ui.ctx().load_texture("logo", color_image, egui::TextureOptions::default());
+                            // 尝试加载 logo - 支持多个路径和工作目录检测
+                            let mut current_dir = std::env::current_dir().unwrap_or_default();
+                            let exe_dir = std::env::current_exe()
+                                .ok()
+                                .and_then(|exe| exe.parent().map(|p| p.to_path_buf()))
+                                .unwrap_or_default();
 
-                                    ui.add(egui::Image::from_texture(&texture_handle).fit_to_exact_size(egui::vec2(72.0, 72.0)));
-                                    ui.add_space(12.0);
+                            let logo_paths = [
+                                // 开发环境路径
+                                "assets/icon/mavi_icon_shadow.png",
+                                // macOS 应用包内路径
+                                "../Resources/assets/icon/mavi_icon_shadow.png",
+                                "Contents/Resources/assets/icon/mavi_icon_shadow.png",
+                                // 相对于可执行文件的路径
+                                &format!("{}/assets/icon/mavi_icon_shadow.png", current_dir.display()),
+                                &format!("{}/Contents/Resources/assets/icon/mavi_icon_shadow.png", exe_dir.display()),
+                                &format!("{}/../Resources/assets/icon/mavi_icon_shadow.png", exe_dir.display()),
+                            ];
+
+                            let mut logo_loaded = false;
+                            for logo_path in &logo_paths {
+                                if std::path::Path::new(logo_path).exists() {
+                                    if let Ok(image_bytes) = std::fs::read(logo_path) {
+                                        if let Ok(image) = image::load_from_memory(&image_bytes) {
+                                            let rgba_image = image.to_rgba8();
+                                            let size = [rgba_image.width() as usize, rgba_image.height() as usize];
+                                            let pixels = rgba_image.into_raw();
+                                            let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+                                            let texture_handle = ui.ctx().load_texture("logo", color_image, egui::TextureOptions::default());
+
+                                            ui.add(egui::Image::from_texture(&texture_handle).fit_to_exact_size(egui::vec2(72.0, 72.0)));
+                                            ui.add_space(12.0);
+                                            logo_loaded = true;
+                                            println!("✅ Logo 加载成功: {}", logo_path);
+                                            break;
+                                        }
+                                    }
                                 }
+                            }
+
+                            if !logo_loaded {
+                                // 如果无法加载logo，显示一个简单的文字图标
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(72.0, 72.0),
+                                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                                    |ui| {
+                                        ui.label(
+                                            egui::RichText::new("M")
+                                                .size(48.0)
+                                                .color(Color32::WHITE)
+                                                .strong()
+                                        );
+                                    }
+                                );
+                                ui.add_space(12.0);
+                                println!("⚠️ Logo 未找到，使用文字替代");
                             }
 
                             ui.vertical(|ui| {
