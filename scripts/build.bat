@@ -1,9 +1,6 @@
 @echo off
 echo 🚀 开始构建 MSettings for Windows...
 
-REM 清理旧构建
-cargo clean
-
 REM 检查 Rust
 where cargo >nul 2>nul
 if %errorlevel% neq 0 (
@@ -11,7 +8,30 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
+REM 检查并生成图标文件
+echo 🎨 检查图标文件...
+if not exist "assets\icon\app_icon.ico" (
+    echo ⚠️  ICO文件不存在，尝试生成...
+    if exist "create_simple_ico.py" (
+        python create_simple_ico.py
+        if %errorlevel% neq 0 (
+            echo ❌ 生成ICO文件失败，继续构建...
+        ) else (
+            echo ✅ ICO文件生成成功
+        )
+    ) else (
+        echo ⚠️  未找到图标生成脚本，继续构建...
+    )
+) else (
+    echo ✅ ICO文件已存在
+)
+
+REM 清理旧构建
+echo 🧹 清理之前的构建...
+cargo clean
+
 REM 构建
+echo 🔨 构建 Release 版本...
 cargo build --release
 if %errorlevel% neq 0 (
     echo ❌ 构建失败!
