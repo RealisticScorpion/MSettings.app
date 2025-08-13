@@ -2,19 +2,31 @@
 
 ## 问题解决
 
-之前可能遇到的图标资源编译错误：`error RC2175: resource file assets\icon\app_icon.ico is not in 3.00 format`
+### 已修复的问题：
 
-**✅ 现已修复！** 项目现在包含正确格式的ICO文件。
+1. **ICO文件格式错误**：`error RC2175: resource file assets\icon\app_icon.ico is not in 3.00 format`
+   - ✅ 已修复：项目现在包含正确格式的ICO文件
+
+2. **AutoLaunch API参数错误**：`this function takes 3 arguments but 4 arguments were supplied`
+   - ✅ 已修复：为不同平台使用正确的API参数
+
+**现在可以正常构建！**
 
 ### 解决方案
 
-1. **自动构建（推荐）**：
+1. **完整构建（推荐）**：
    ```cmd
    scripts\build.bat
    ```
    构建脚本会自动处理所有必要的步骤。
 
-2. **备用方案**：
+2. **如果ICO文件丢失**：
+   ```cmd
+   generate_ico.bat
+   ```
+   这会重新生成正确格式的ICO文件。
+
+3. **备用方案**：
    如果仍有问题，可以删除 `app_icon.rc` 文件，应用会使用默认图标。
 
 ## 构建步骤
