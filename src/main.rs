@@ -167,6 +167,11 @@ impl Default for AppState {
         let app_name = "AutoUpdateMavenSettings";
         let exe_path = std::env::current_exe().unwrap();
         let exe_path_str = exe_path.to_str().unwrap();
+        // 不同平台的AutoLaunch API有不同的参数
+        #[cfg(target_os = "windows")]
+        let auto_launch = AutoLaunch::new(app_name, exe_path_str, &[] as &[&str]);
+        
+        #[cfg(not(target_os = "windows"))]
         let auto_launch = AutoLaunch::new(app_name, exe_path_str, false, &[] as &[&str]);
 
         let auto_launch_enabled = auto_launch.is_enabled().unwrap_or(false);
