@@ -2,25 +2,20 @@
 
 ## 问题解决
 
-如果遇到图标资源编译错误：`error RC2175: resource file assets\icon\app_icon.ico is not in 3.00 format`
+之前可能遇到的图标资源编译错误：`error RC2175: resource file assets\icon\app_icon.ico is not in 3.00 format`
+
+**✅ 现已修复！** 项目现在包含正确格式的ICO文件。
 
 ### 解决方案
 
-1. **自动解决（推荐）**：
+1. **自动构建（推荐）**：
    ```cmd
    scripts\build.bat
    ```
-   构建脚本会自动检查并生成正确格式的ICO文件。
+   构建脚本会自动处理所有必要的步骤。
 
-2. **手动生成ICO文件**：
-   ```cmd
-   python create_simple_ico.py
-   ```
-
-3. **备用方案**：
-   如果仍有问题，可以：
-   - 删除 `app_icon.rc` 文件（应用会使用默认图标）
-   - 或使用备用RC文件：`copy app_icon_fallback.rc app_icon.rc`
+2. **备用方案**：
+   如果仍有问题，可以删除 `app_icon.rc` 文件，应用会使用默认图标。
 
 ## 构建步骤
 
