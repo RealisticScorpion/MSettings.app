@@ -1,16 +1,48 @@
 // main.rs
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 #[cfg(target_os = "macos")]
 #[link(name = "AppKit", kind = "framework")]
 extern "C" {}
 
 use auto_launch::AutoLaunch;
-use eframe::egui::{self, FontData, FontDefinitions, FontFamily, Context, Color32, Stroke, Rounding};
+use eframe::egui::{self, Color32, Stroke, Rounding};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+// 顶部添加辅助函数
+fn get_config_file_path() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    let base = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string());
+    #[cfg(not(target_os = "windows"))]
+    let base = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(base).join(".msettings_config")
+}
+
+fn load_saved_url() -> Option<String> {
+    let path = get_config_file_path();
+    if let Ok(content) = fs::read_to_string(&path) {
+        let trimmed = content.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
+}
+
+fn save_url_to_config(url: &str) {
+    let path = get_config_file_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = fs::File::create(path) {
+        let _ = file.write_all(url.as_bytes());
+    }
+}
 
 fn setup_custom_fonts(ctx: &egui::Context) {
     use eframe::egui::{FontData, FontDefinitions, FontFamily};
@@ -33,7 +65,7 @@ fn setup_custom_fonts(ctx: &egui::Context) {
         if Path::new(font_path).exists() {
             if let Ok(font_data) = std::fs::read(font_path) {
                 fonts.font_data.insert(
-                    "chinese_font".to_owned(),
+                    "chinese_font".to_string(),
                     FontData::from_owned(font_data),
                 );
                 font_loaded = true;
@@ -48,12 +80,12 @@ fn setup_custom_fonts(ctx: &egui::Context) {
             .families
             .get_mut(&FontFamily::Proportional)
             .unwrap()
-            .insert(0, "chinese_font".to_owned());
+            .insert(0, "chinese_font".to_string());
         fonts
             .families
             .get_mut(&FontFamily::Monospace)
             .unwrap()
-            .insert(0, "chinese_font".to_owned());
+            .insert(0, "chinese_font".to_string());
     } else {
         println!("⚠️ 无法加载嵌入字体，尝试系统字体");
 
@@ -70,12 +102,12 @@ fn setup_custom_fonts(ctx: &egui::Context) {
             .families
             .get_mut(&FontFamily::Proportional)
             .unwrap()
-            .insert(0, fallback_font.to_owned());
+            .insert(0, fallback_font.to_string());
         fonts
             .families
             .get_mut(&FontFamily::Monospace)
             .unwrap()
-            .insert(0, fallback_font.to_owned());
+            .insert(0, fallback_font.to_string());
     }
 
     ctx.set_fonts(fonts);
@@ -95,8 +127,8 @@ fn get_m2_settings_path() -> PathBuf {
 
 struct AppState {
     url: String,
+    previous_url: String,  // 新增
     interval_hours: u64,
-    last_update: Option<Instant>,
     status: String,
     running: bool,
     enable_scheduler: bool,
@@ -108,7 +140,6 @@ struct AppState {
     // 新增字段用于线程管理
     scheduler_running: bool,
     stop_signal: Arc<Mutex<bool>>,
-    last_immediate_update: Option<Instant>,
     next_update_time: Option<chrono::DateTime<chrono::Local>>,
 }
 
@@ -117,7 +148,6 @@ struct SharedState {
     url: String,
     interval_hours: u64,
     history: Vec<String>,
-    stop_signal: bool,
 }
 
 // 颜色常量
@@ -141,19 +171,23 @@ impl Default for AppState {
 
         let auto_launch_enabled = auto_launch.is_enabled().unwrap_or(false);
 
+        // 读取配置文件，如果没有则用默认值
+        let initial_url = load_saved_url().unwrap_or_else(|| {
+            "http://13.48.27.126/settings.xml".to_string()
+        });
+
         let shared_state = Arc::new(Mutex::new(SharedState {
             enable_scheduler: false,
-            url: "http://13.48.27.126/settings.xml".to_owned(),
+            url: initial_url.clone(),
             interval_hours: 10,
             history: Vec::new(),
-            stop_signal: false,
         }));
 
         Self {
-            url: "http://13.48.27.126/settings.xml".to_owned(),
+            url: initial_url.clone(),
+            previous_url: initial_url,
             interval_hours: 10,
-            last_update: None,
-            status: "未开始".to_owned(),
+            status: "未开始".to_string(),
             running: false,
             enable_scheduler: false,
             history: Vec::new(),
@@ -162,13 +196,52 @@ impl Default for AppState {
             auto_launch,
             scheduler_running: false,
             stop_signal: Arc::new(Mutex::new(false)),
-            last_immediate_update: None,
             next_update_time: None,
         }
     }
 }
 
 impl AppState {
+    /// 异步执行立即更新，避免阻塞 UI 线程
+    fn perform_immediate_update_async(&mut self, ctx: &egui::Context) {
+        // 校验 URL
+        if !self.url.starts_with("http") {
+            self.status = "请输入有效的下载地址".to_string();
+            return;
+        }
+
+        // 设置状态，让用户知道正在更新
+        if self.enable_scheduler {
+            self.status = "立即更新中，定时任务已启动".to_string();
+        } else {
+            self.status = "手动更新中".to_string();
+        }
+        self.running = true;
+
+        // 克隆需要在子线程中使用的值
+        let url = self.url.clone();
+        let shared_state = Arc::clone(&self.shared_state);
+        let ctx_clone = ctx.clone();
+
+        // 后台线程执行下载和替换
+        thread::spawn(move || {
+            let now = chrono::Local::now();
+            let result = download_and_replace(&url);
+            let record = match result {
+                Ok(_) => format!("{}: 立即更新成功", now.format("%Y-%m-%d %H:%M:%S")),
+                Err(e) => format!("{}: 立即更新失败 - {}", now.format("%Y-%m-%d %H:%M:%S"), e),
+            };
+
+            // 只更新共享历史记录，不直接修改 AppState
+            if let Ok(mut shared) = shared_state.lock() {
+                shared.history.push(record);
+            }
+
+            // 通知主线程重绘界面
+            ctx_clone.request_repaint();
+        });
+    }
+
     fn draw_header(&self, ui: &mut egui::Ui, content_width: f32) {
         let header_height = 90.0;
 
@@ -204,17 +277,20 @@ impl AppState {
                                 .unwrap_or_default();
 
                             let logo_paths = [
-                                // 开发环境路径
+                                // 开发环境路径 - 优先使用指定的图标
                                 "assets/icon/mavi_icon_shadow.png",
                                 // macOS 应用包内路径
-                                "../Resources/assets/icon/mavi_icon_shadow.png",
+                                "../Resources/assets/icon/mavi_icon_shadow.png", 
                                 "Contents/Resources/assets/icon/mavi_icon_shadow.png",
                                 // 相对于可执行文件的路径
                                 &format!("{}/assets/icon/mavi_icon_shadow.png", current_dir.display()),
                                 &format!("{}/Contents/Resources/assets/icon/mavi_icon_shadow.png", exe_dir.display()),
                                 &format!("{}/../Resources/assets/icon/mavi_icon_shadow.png", exe_dir.display()),
+                                // 备用路径
+                                &format!("{}/assets/icon/mavi_icon_shadow.png", exe_dir.display()),
                             ];
 
+                            // 加载logo纹理（使用缓存机制）
                             let mut logo_loaded = false;
                             for logo_path in &logo_paths {
                                 if std::path::Path::new(logo_path).exists() {
@@ -224,12 +300,11 @@ impl AppState {
                                             let size = [rgba_image.width() as usize, rgba_image.height() as usize];
                                             let pixels = rgba_image.into_raw();
                                             let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
-                                            let texture_handle = ui.ctx().load_texture("logo", color_image, egui::TextureOptions::default());
+                                            let texture_handle = ui.ctx().load_texture("app_logo", color_image, egui::TextureOptions::default());
 
                                             ui.add(egui::Image::from_texture(&texture_handle).fit_to_exact_size(egui::vec2(72.0, 72.0)));
                                             ui.add_space(12.0);
                                             logo_loaded = true;
-                                            println!("✅ Logo 加载成功: {}", logo_path);
                                             break;
                                         }
                                     }
@@ -657,9 +732,15 @@ impl AppState {
                     .color(SECONDARY_TEXT_COLOR)
             );
 
-            // 同步到共享状态
+            // 同步 URL 到共享状态
             if let Ok(mut shared) = self.shared_state.lock() {
-                shared.interval_hours = self.interval_hours;
+                shared.url = self.url.clone();
+            }
+
+            // 新增：如果地址发生变化则保存到配置文件
+            if self.url != self.previous_url {
+                save_url_to_config(&self.url);
+                self.previous_url = self.url.clone();
             }
         });
 
@@ -680,11 +761,14 @@ impl AppState {
         if self.draw_custom_switch(ui, "开机自启", self.auto_launch_enabled).clicked() {
             self.auto_launch_enabled = !self.auto_launch_enabled;
             if self.auto_launch_enabled {
-                if let Err(_) = self.auto_launch.enable() {
+                if let Err(e) = self.auto_launch.enable() {
+                    eprintln!("Failed to enable auto launch: {}", e);
                     self.auto_launch_enabled = false;
                 }
             } else {
-                let _ = self.auto_launch.disable();
+                if let Err(e) = self.auto_launch.disable() {
+                    eprintln!("Failed to disable auto launch: {}", e);
+                }
             }
         }
 
@@ -698,7 +782,7 @@ impl AppState {
                 if self.url.starts_with("http") && self.interval_hours > 0 {
                     self.start_update_task(ctx);
                 } else {
-                    self.status = "请输入有效的 URL 和间隔".to_owned();
+                    self.status = "请输入有效的 URL 和间隔".to_string();
                 }
             }
         } else {
@@ -726,8 +810,8 @@ impl AppState {
     }
 
     fn start_update_task(&mut self, ctx: &egui::Context) {
-        // 立即执行一次更新
-        self.perform_immediate_update();
+        // 立即执行一次更新：改用异步版本
+        self.perform_immediate_update_async(ctx);
 
         if self.enable_scheduler && !self.scheduler_running {
             // 设置下次更新时间
@@ -737,7 +821,7 @@ impl AppState {
             // 启动定时任务
             self.scheduler_running = true;
             self.running = true;
-            self.status = "定时任务已启动".to_owned();
+            self.status = "定时任务已启动".to_string();
 
             // 重置停止信号
             if let Ok(mut stop) = self.stop_signal.lock() {
@@ -768,8 +852,11 @@ impl AppState {
                             3600 // 默认1小时
                         }
                     };
+                    
+                    // 防止间隔时间过小
+                    let interval_secs = interval_secs.max(3600); // 最小1小时
 
-                    // 分段休眠，每秒检查一次停止信号
+                    // 分段休眠，每秒检查一次停止信号，避免长时间阻塞
                     for _ in 0..interval_secs {
                         thread::sleep(Duration::from_secs(1));
                         if let Ok(should_stop) = stop_signal.lock() {
@@ -800,7 +887,7 @@ impl AppState {
         } else if !self.enable_scheduler {
             // 如果定时任务开关关闭，只执行一次更新
             self.running = false;
-            self.status = "手动更新完成".to_owned();
+            self.status = "手动更新完成".to_string();
             self.next_update_time = None;
 
             // 如果定时任务正在运行，停止它
@@ -818,43 +905,8 @@ impl AppState {
             self.scheduler_running = false;
         }
         self.running = false;
-        self.status = "已停止".to_owned();
+        self.status = "已停止".to_string();
         self.next_update_time = None;
-    }
-
-    fn perform_immediate_update(&mut self) {
-        if !self.url.starts_with("http") {
-            self.status = "请输入有效的下载地址".to_owned();
-            return;
-        }
-
-        let now = chrono::Local::now();
-        let result = download_and_replace(&self.url);
-        let record = match result {
-            Ok(_) => {
-                self.last_immediate_update = Some(Instant::now());
-                self.status = if self.enable_scheduler {
-                    "立即更新成功，定时任务已启动".to_owned()
-                } else {
-                    "手动更新成功".to_owned()
-                };
-                format!("{}: 立即更新成功", now.format("%Y-%m-%d %H:%M:%S"))
-            },
-            Err(e) => {
-                self.status = format!("更新失败: {}", e);
-                format!("{}: 立即更新失败 - {}", now.format("%Y-%m-%d %H:%M:%S"), e)
-            },
-        };
-
-        self.history.push(record.clone());
-
-        // 同步到共享状态
-        if let Ok(mut shared) = self.shared_state.lock() {
-            shared.history.push(record);
-            shared.url = self.url.clone();
-            shared.interval_hours = self.interval_hours;
-            shared.enable_scheduler = self.enable_scheduler;
-        }
     }
 }
 
@@ -934,16 +986,33 @@ impl eframe::App for AppState {
                     }
                 );
 
-                // 同步 shared_state 到本地 history
+                // 同步 shared_state 到本地 history，更新 UI
                 if let Ok(shared) = self.shared_state.lock() {
                     self.history = shared.history.clone();
+                }
+                // 新增代码：
+                if self.url != self.previous_url {
+                    save_url_to_config(&self.url);
+                    self.previous_url = self.url.clone();
                 }
             });
     }
 }
 
 fn download_and_replace(url: &str) -> Result<(), String> {
-    let resp = reqwest::blocking::get(url).map_err(|e| e.to_string())?;
+    // URL 验证
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("Invalid URL: must start with http:// or https://".to_string());
+    }
+    
+    // 添加超时和用户代理
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent("AutoUpdateMavenSettings/1.0")
+        .build()
+        .map_err(|e| e.to_string())?;
+    
+    let resp = client.get(url).send().map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("HTTP 错误: {}", resp.status()));
     }
@@ -953,28 +1022,75 @@ fn download_and_replace(url: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
+    
+    // 备份现有文件
+    if path.exists() {
+        let backup_path = path.with_extension("xml.backup");
+        if let Err(e) = fs::copy(&path, &backup_path) {
+            eprintln!("Warning: Failed to create backup: {}", e);
+        }
+    }
+    
     let mut file = fs::File::create(&path).map_err(|e| e.to_string())?;
     file.write_all(&content).map_err(|e| e.to_string())?;
     Ok(())
 }
 
+fn load_window_icon() -> Option<egui::IconData> {
+    let icon_paths = [
+        "assets/icon/mavi_icon_shadow.png",
+        "../Resources/assets/icon/mavi_icon_shadow.png",
+        "Contents/Resources/assets/icon/mavi_icon_shadow.png",
+    ];
+    
+    for icon_path in &icon_paths {
+        if std::path::Path::new(icon_path).exists() {
+            if let Ok(image_bytes) = std::fs::read(icon_path) {
+                if let Ok(image) = image::load_from_memory(&image_bytes) {
+                    let rgba_image = image.to_rgba8();
+                    let (width, height) = rgba_image.dimensions();
+                    let pixels = rgba_image.into_raw();
+                    
+                    return Some(egui::IconData {
+                        rgba: pixels,
+                        width: width as u32,
+                        height: height as u32,
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
 fn main() {
     let app = AppState::default();
+    
+    let mut viewport_builder = egui::ViewportBuilder::default()
+        .with_inner_size([760.0, 680.0])  // 增加窗口尺寸以适应更大的背景
+        .with_min_inner_size([720.0, 640.0])
+        .with_max_inner_size([840.0, 780.0])
+        .with_resizable(true);
+    
+    // 设置窗口图标
+    if let Some(icon) = load_window_icon() {
+        viewport_builder = viewport_builder.with_icon(icon);
+    }
+    
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([760.0, 680.0])  // 增加窗口尺寸以适应更大的背景
-            .with_min_inner_size([720.0, 640.0])
-            .with_max_inner_size([840.0, 780.0])
-            .with_resizable(true),
+        viewport: viewport_builder,
         ..Default::default()
     };
 
-    eframe::run_native(
+    if let Err(e) = eframe::run_native(
         "MSettings - Maven 配置自动更新工具",
         native_options,
         Box::new(|cc| {
             setup_custom_fonts(&cc.egui_ctx);
             Box::new(app)
         }),
-    ).unwrap();
+    ) {
+        eprintln!("Failed to run application: {}", e);
+        std::process::exit(1);
+    }
 }

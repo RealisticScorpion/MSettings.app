@@ -33,10 +33,11 @@ IF EXIST assets\fonts\SourceHanSerifCN-Regular-1.otf (
 )
 
 REM 拷贝图标
-IF EXIST assets\icon\app_icon.png (
-    copy assets\icon\app_icon.png dist\assets\icon\
+IF EXIST assets\icon\mavi_icon_shadow.png (
+    copy assets\icon\mavi_icon_shadow.png dist\assets\icon\
+    echo ✅ 图标文件已复制
 ) ELSE (
-    echo ⚠️  未找到图标文件
+    echo ⚠️  未找到图标文件 mavi_icon_shadow.png
 )
 
 echo ✅ 打包完成，输出目录：dist\

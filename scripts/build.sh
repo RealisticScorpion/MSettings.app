@@ -140,14 +140,12 @@ if [ $? -eq 0 ]; then
     <string>AppIcon</string>
     <key>CFBundleIconName</key>
     <string>AppIcon</string>
-    <key>NSPrincipalClass</key>
-    <string>NSApplication</string>
     <key>LSMinimumSystemVersion</key>
     <string>10.12</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>LSApplicationCategoryType</key>
-    <string>public.app-category.developer-tools</string>
+    <string>public.app-category.utilities</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>
