@@ -20,6 +20,9 @@ reqwest = { version = "0.12", features = ["blocking"] }
 chrono = "0.4"
 auto-launch = "0.5"
 image = "0.24.9"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+single-instance = "0.3"
 
 # 可选：如果需要更好的字体渲染
 # egui_extras = { version = "0.27", features = ["all_loaders"] }

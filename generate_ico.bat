@@ -61,9 +61,9 @@ REM 清理临时文件
 del temp_ico_gen.py
 
 if exist "assets\icon\app_icon.ico" (
-    echo ✅ ICO文件生成完成: assets\icon\app_icon.ico
+    echo [OK] ICO文件生成完成: assets\icon\app_icon.ico
 ) else (
-    echo ❌ ICO文件生成失败
+    echo [ERROR] ICO文件生成失败
 )
 
 pause

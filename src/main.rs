@@ -14,34 +14,107 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+use single_instance::SingleInstance;
+
+// 配置结构
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AppConfig {
+    url: String,
+    interval_hours: u64,
+    enable_scheduler: bool,
+    auto_launch_enabled: bool,
+    minimize_to_background: bool,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            url: "https://devcloud.greenvoltis.com/maven/settings.xml".to_string(),
+            interval_hours: 10,
+            enable_scheduler: false,
+            auto_launch_enabled: false,
+            minimize_to_background: true,
+        }
+    }
+}
+
 // 顶部添加辅助函数
 fn get_config_file_path() -> PathBuf {
     #[cfg(target_os = "windows")]
     let base = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string());
     #[cfg(not(target_os = "windows"))]
     let base = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(base).join(".msettings_config")
+    PathBuf::from(base).join(".msettings_config.json")
 }
 
-fn load_saved_url() -> Option<String> {
+fn load_config() -> AppConfig {
     let path = get_config_file_path();
-    if let Ok(content) = fs::read_to_string(&path) {
-        let trimmed = content.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
+    match fs::read_to_string(&path) {
+        Ok(content) => {
+            match serde_json::from_str::<AppConfig>(&content) {
+                Ok(config) => config,
+                Err(e) => {
+                    eprintln!("Warning: Failed to parse config file: {}, using defaults", e);
+                    AppConfig::default()
+                }
+            }
+        }
+        Err(_) => {
+            // 配置文件不存在或无法读取，使用默认配置
+            AppConfig::default()
         }
     }
-    None
+}
+
+fn save_config(config: &AppConfig) {
+    let path = get_config_file_path();
+    if let Some(parent) = path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            eprintln!("Warning: Failed to create config directory: {}", e);
+            return;
+        }
+    }
+    match serde_json::to_string_pretty(config) {
+        Ok(json) => {
+            match fs::File::create(&path) {
+                Ok(mut file) => {
+                    if let Err(e) = file.write_all(json.as_bytes()) {
+                        eprintln!("Warning: Failed to write config file: {}", e);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to create config file: {}", e);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Warning: Failed to serialize config: {}", e);
+        }
+    }
+}
+
+// 创建AutoLaunch实例的辅助函数
+fn create_auto_launch(app_name: &str, exe_path: &str) -> Result<AutoLaunch, Box<dyn std::error::Error>> {
+    #[cfg(target_os = "windows")]
+    let auto_launch = AutoLaunch::new(app_name, exe_path, &[] as &[&str]);
+    
+    #[cfg(not(target_os = "windows"))]
+    let auto_launch = AutoLaunch::new(app_name, exe_path, false, &[] as &[&str]);
+    
+    Ok(auto_launch)
+}
+
+// 保持向后兼容的函数
+#[allow(dead_code)]
+fn load_saved_url() -> Option<String> {
+    Some(load_config().url)
 }
 
 fn save_url_to_config(url: &str) {
-    let path = get_config_file_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    if let Ok(mut file) = fs::File::create(path) {
-        let _ = file.write_all(url.as_bytes());
-    }
+    let mut config = load_config();
+    config.url = url.to_string();
+    save_config(&config);
 }
 
 fn setup_custom_fonts(ctx: &egui::Context) {
@@ -129,6 +202,7 @@ struct AppState {
     url: String,
     previous_url: String,  // 新增
     interval_hours: u64,
+    previous_interval_hours: u64,  // 新增
     status: String,
     running: bool,
     enable_scheduler: bool,
@@ -141,6 +215,11 @@ struct AppState {
     scheduler_running: bool,
     stop_signal: Arc<Mutex<bool>>,
     next_update_time: Option<chrono::DateTime<chrono::Local>>,
+    // 窗口显示控制
+    show_window: bool,
+    minimize_to_background: bool,
+    // 重新显示窗口的机制
+    should_show_window: Arc<Mutex<bool>>,
 }
 
 struct SharedState {
@@ -165,48 +244,124 @@ const BORDER_COLOR: Color32 = Color32::from_rgb(225, 229, 233);
 impl Default for AppState {
     fn default() -> Self {
         let app_name = "AutoUpdateMavenSettings";
-        let exe_path = std::env::current_exe().unwrap();
-        let exe_path_str = exe_path.to_str().unwrap();
-        // 不同平台的AutoLaunch API有不同的参数
-        #[cfg(target_os = "windows")]
-        let auto_launch = AutoLaunch::new(app_name, exe_path_str, &[] as &[&str]);
         
-        #[cfg(not(target_os = "windows"))]
-        let auto_launch = AutoLaunch::new(app_name, exe_path_str, false, &[] as &[&str]);
+        // 安全地获取可执行文件路径
+        let exe_path = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("Warning: Failed to get current exe path: {}, using fallback", e);
+                std::path::PathBuf::from("AutoUpdateMavenSettings")
+            }
+        };
+        
+        let exe_path_str = match exe_path.to_str() {
+            Some(path) => path,
+            None => {
+                eprintln!("Warning: Exe path contains invalid UTF-8, using fallback");
+                "AutoUpdateMavenSettings"
+            }
+        };
+        
+        // 不同平台的AutoLaunch API有不同的参数
+        let auto_launch = match create_auto_launch(app_name, exe_path_str) {
+            Ok(launcher) => launcher,
+            Err(e) => {
+                eprintln!("Warning: Failed to create AutoLaunch: {}", e);
+                // 创建一个空的AutoLaunch作为fallback
+                #[cfg(target_os = "windows")]
+                let fallback = AutoLaunch::new("fallback", "fallback", &[] as &[&str]);
+                #[cfg(not(target_os = "windows"))]
+                let fallback = AutoLaunch::new("fallback", "fallback", false, &[] as &[&str]);
+                fallback
+            }
+        };
 
-        let auto_launch_enabled = auto_launch.is_enabled().unwrap_or(false);
-
-        // 读取配置文件，如果没有则用默认值
-        let initial_url = load_saved_url().unwrap_or_else(|| {
-            "http://13.48.27.126/settings.xml".to_string()
-        });
-
+        // 读取配置文件
+        eprintln!("Loading configuration...");
+        let config = load_config();
+        eprintln!("Configuration loaded successfully");
+        
         let shared_state = Arc::new(Mutex::new(SharedState {
-            enable_scheduler: false,
-            url: initial_url.clone(),
-            interval_hours: 10,
+            enable_scheduler: config.enable_scheduler,
+            url: config.url.clone(),
+            interval_hours: config.interval_hours,
             history: Vec::new(),
         }));
 
         Self {
-            url: initial_url.clone(),
-            previous_url: initial_url,
-            interval_hours: 10,
+            url: config.url.clone(),
+            previous_url: config.url,
+            interval_hours: config.interval_hours,
+            previous_interval_hours: config.interval_hours,
             status: "未开始".to_string(),
             running: false,
-            enable_scheduler: false,
+            enable_scheduler: config.enable_scheduler,
             history: Vec::new(),
             shared_state,
-            auto_launch_enabled,
+            auto_launch_enabled: config.auto_launch_enabled,
             auto_launch,
             scheduler_running: false,
             stop_signal: Arc::new(Mutex::new(false)),
             next_update_time: None,
+            show_window: true,
+            minimize_to_background: config.minimize_to_background,
+            should_show_window: Arc::new(Mutex::new(false)),
         }
     }
 }
 
 impl AppState {
+    /// 保存当前所有配置到文件
+    fn save_current_config(&self) {
+        let config = AppConfig {
+            url: self.url.clone(),
+            interval_hours: self.interval_hours,
+            enable_scheduler: self.enable_scheduler,
+            auto_launch_enabled: self.auto_launch_enabled,
+            minimize_to_background: self.minimize_to_background,
+        };
+        save_config(&config);
+    }
+
+    /// 处理窗口显示状态
+    fn handle_window_visibility(&mut self, ctx: &egui::Context) {
+        // 检查文件信号
+        if check_show_signal() {
+            self.show_window = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        
+        // 检查是否需要重新显示窗口
+        if let Ok(mut should_show) = self.should_show_window.try_lock() {
+            if *should_show {
+                self.show_window = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                *should_show = false;
+            }
+        }
+        
+        // 添加键盘快捷键支持 - 按ESC最小化到后台
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && self.minimize_to_background {
+            self.show_window = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            return;
+        }
+        
+        // 添加组合键支持 - Cmd+Shift+M (macOS) 或 Ctrl+Shift+M (Windows) 重新显示窗口
+        let show_key_combo = if cfg!(target_os = "macos") {
+            ctx.input(|i| i.modifiers.mac_cmd && i.modifiers.shift && i.key_pressed(egui::Key::M))
+        } else {
+            ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::M))
+        };
+        
+        if show_key_combo {
+            self.show_window = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+    }
     /// 异步执行立即更新，避免阻塞 UI 线程
     fn perform_immediate_update_async(&mut self, ctx: &egui::Context) {
         // 校验 URL
@@ -336,17 +491,21 @@ impl AppState {
 
                             ui.vertical(|ui| {
                                 ui.add_space(20.0);
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        egui::RichText::new("MSettings")
-                                            .size(22.0)
-                                            .color(Color32::WHITE)
-                                            .strong()
-                                    );
-                                    ui.add_space(8.0);
-                                    ui.label(
-                                        egui::RichText::new("Maven 配置自动更新工具")
-                                            .size(13.0)
+                                // 使用垂直居中对齐的水平布局
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(ui.available_width(), 30.0),
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(
+                                            egui::RichText::new("MSettings")
+                                                .size(22.0)
+                                                .color(Color32::WHITE)
+                                                .strong()
+                                        );
+                                        ui.add_space(8.0);
+                                        ui.label(
+                                            egui::RichText::new("Maven 配置自动更新工具")
+                                                .size(13.0)
                                             .color(Color32::from_rgba_unmultiplied(255, 255, 255, 230))
                                     );
                                 });
@@ -642,24 +801,28 @@ impl AppState {
                     });
                 } else {
                     for (i, record) in self.history.iter().rev().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.add_space(12.0);
+                        // 使用垂直居中的布局
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), 24.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.add_space(12.0);
 
-                            // 状态图标
-                            let (icon, color) = if record.contains("成功") {
-                                ("✅", SUCCESS_COLOR)
-                            } else {
-                                ("❌", ERROR_COLOR)
-                            };
+                                // 状态图标
+                                let (icon, color) = if record.contains("成功") {
+                                    ("✅", SUCCESS_COLOR)
+                                } else {
+                                    ("❌", ERROR_COLOR)
+                                };
 
-                            ui.label(icon);
-                            ui.add_space(6.0);
-                            ui.label(
-                                egui::RichText::new(record)
-                                    .size(12.0)
-                                    .color(color)
-                            );
-                        });
+                                ui.label(icon);
+                                ui.add_space(6.0);
+                                ui.label(
+                                    egui::RichText::new(record)
+                                        .size(12.0)
+                                        .color(color)
+                                );
+                            });
 
                         if i < self.history.len() - 1 {
                             ui.add_space(6.0);
@@ -701,9 +864,15 @@ impl AppState {
             }
         );
 
-        // 同步 URL 到共享状态
+        // 同步 URL 到共享状态并保存配置
         if let Ok(mut shared) = self.shared_state.lock() {
             shared.url = self.url.clone();
+        }
+        
+        // 如果URL发生变化，保存到配置文件
+        if self.url != self.previous_url {
+            save_url_to_config(&self.url);
+            self.previous_url = self.url.clone();
         }
 
         ui.add_space(16.0);
@@ -717,29 +886,36 @@ impl AppState {
         });
         ui.add_space(6.0);
 
-        ui.horizontal(|ui| {
-            // 垂直居中的数值输入框
-            ui.allocate_ui_with_layout(
-                egui::vec2(75.0, 36.0),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.add_sized(
-                        [75.0, 36.0],
-                        egui::DragValue::new(&mut self.interval_hours)
-                            .clamp_range(1..=168)
-                    );
-                }
-            );
-            ui.add_space(8.0);
-            ui.label(
-                egui::RichText::new("小时")
-                    .size(13.0)
-                    .color(SECONDARY_TEXT_COLOR)
-            );
+        // 使用垂直居中的布局容器
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 36.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                // 数值输入框
+                ui.add_sized(
+                    [75.0, 36.0],
+                    egui::DragValue::new(&mut self.interval_hours)
+                        .clamp_range(1..=168)
+                );
+                ui.add_space(8.0);
+                // 垂直居中的"小时"标签
+                ui.label(
+                    egui::RichText::new("小时")
+                        .size(13.0)
+                        .color(SECONDARY_TEXT_COLOR)
+                );
+            });
 
-            // 同步 URL 到共享状态
+            // 同步配置到共享状态并保存
             if let Ok(mut shared) = self.shared_state.lock() {
                 shared.url = self.url.clone();
+                shared.interval_hours = self.interval_hours;
+            }
+            
+            // 如果间隔小时数发生变化，保存配置
+            if self.interval_hours != self.previous_interval_hours {
+                self.save_current_config();
+                self.previous_interval_hours = self.interval_hours;
             }
 
             // 新增：如果地址发生变化则保存到配置文件
@@ -747,7 +923,6 @@ impl AppState {
                 save_url_to_config(&self.url);
                 self.previous_url = self.url.clone();
             }
-        });
 
         ui.add_space(20.0);
 
@@ -759,6 +934,7 @@ impl AppState {
             if let Ok(mut shared) = self.shared_state.lock() {
                 shared.enable_scheduler = self.enable_scheduler;
             }
+            self.save_current_config();
         }
 
         ui.add_space(10.0);
@@ -775,6 +951,29 @@ impl AppState {
                     eprintln!("Failed to disable auto launch: {}", e);
                 }
             }
+            self.save_current_config();
+        }
+
+        ui.add_space(10.0);
+
+        if self.draw_custom_switch(ui, "关闭窗口后台运行", self.minimize_to_background).clicked() {
+            self.minimize_to_background = !self.minimize_to_background;
+            self.save_current_config();
+        }
+        
+        // 添加说明文字
+        if self.minimize_to_background {
+            ui.add_space(5.0);
+            let shortcut = if cfg!(target_os = "macos") {
+                "Cmd+Shift+M"
+            } else {
+                "Ctrl+Shift+M"
+            };
+            ui.label(
+                egui::RichText::new(&format!("提示: 关闭窗口时程序将在后台继续运行\n按ESC键最小化，按{}重新显示，或双击应用图标", shortcut))
+                    .size(11.0)
+                    .color(SECONDARY_TEXT_COLOR)
+            );
         }
 
         ui.add_space(20.0);
@@ -917,6 +1116,28 @@ impl AppState {
 
 impl eframe::App for AppState {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 处理窗口显示状态
+        self.handle_window_visibility(ctx);
+        
+        // 处理窗口关闭事件 - 如果启用了后台运行，最小化到后台而不是退出
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if self.minimize_to_background {
+                self.show_window = false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                return;
+            } else {
+                // 如果没有启用后台运行，正常退出
+                std::process::exit(0);
+            }
+        }
+        
+        // 只在窗口可见时绘制UI
+        if !self.show_window {
+            std::thread::sleep(Duration::from_millis(100)); // 减少CPU使用率
+            ctx.request_repaint_after(Duration::from_millis(500)); // 降低刷新频率
+            return;
+        }
+        
         // 设置应用样式
         let mut style = (*ctx.style()).clone();
         style.visuals.window_rounding = Rounding::same(16.0);
@@ -1041,6 +1262,34 @@ fn download_and_replace(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+// 通知已存在的实例显示窗口
+fn show_existing_window() {
+    // 创建一个信号文件来通知已存在的实例
+    let signal_path = get_signal_file_path();
+    if let Ok(mut file) = std::fs::File::create(&signal_path) {
+        let _ = file.write_all(b"show_window");
+    }
+}
+
+// 获取信号文件路径
+fn get_signal_file_path() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    let base = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string());
+    #[cfg(not(target_os = "windows"))]
+    let base = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(base).join(".msettings_show_signal")
+}
+
+// 检查是否有显示窗口的信号
+fn check_show_signal() -> bool {
+    let signal_path = get_signal_file_path();
+    if signal_path.exists() {
+        let _ = std::fs::remove_file(&signal_path); // 移除信号文件
+        return true;
+    }
+    false
+}
+
 fn load_window_icon() -> Option<egui::IconData> {
     let icon_paths = [
         "assets/icon/mavi_icon_shadow.png",
@@ -1069,17 +1318,59 @@ fn load_window_icon() -> Option<egui::IconData> {
 }
 
 fn main() {
+    // 设置panic handler用于更好的调试信息
+    std::panic::set_hook(Box::new(|panic_info| {
+        eprintln!("PANIC: {}", panic_info);
+        if let Some(location) = panic_info.location() {
+            eprintln!("Panic occurred in file '{}' at line {}", location.file(), location.line());
+        }
+        if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            eprintln!("Panic payload: {}", s);
+        }
+    }));
+    
+    // 打印启动信息用于调试
+    eprintln!("Starting MSettings application...");
+    
+    // 单实例检测 - 添加错误处理
+    let instance = match SingleInstance::new("msettings-maven-updater") {
+        Ok(instance) => {
+            eprintln!("Single instance created successfully");
+            Some(instance)
+        }
+        Err(e) => {
+            eprintln!("Failed to create single instance: {}", e);
+            // 如果单实例创建失败，继续运行但不做单实例检查
+            None
+        }
+    };
+    
+    if let Some(ref instance) = instance {
+        if !instance.is_single() {
+            // 如果已有实例在运行，尝试通知它显示窗口
+            show_existing_window();
+            std::process::exit(0);
+        }
+    }
+    
+    eprintln!("Creating application state...");
     let app = AppState::default();
+    eprintln!("Application state created successfully");
     
     let mut viewport_builder = egui::ViewportBuilder::default()
-        .with_inner_size([760.0, 680.0])  // 增加窗口尺寸以适应更大的背景
-        .with_min_inner_size([720.0, 640.0])
-        .with_max_inner_size([840.0, 780.0])
+        .with_inner_size([760.0, 750.0])  // 增加高度以适应后台运行开关
+        .with_min_inner_size([720.0, 710.0])
+        .with_max_inner_size([840.0, 850.0])
         .with_resizable(true);
     
-    // 设置窗口图标
-    if let Some(icon) = load_window_icon() {
-        viewport_builder = viewport_builder.with_icon(icon);
+    // 设置窗口图标 - 添加错误处理
+    match load_window_icon() {
+        Some(icon) => {
+            viewport_builder = viewport_builder.with_icon(icon);
+        }
+        None => {
+            eprintln!("Warning: Could not load window icon, using default");
+        }
     }
     
     let native_options = eframe::NativeOptions {
